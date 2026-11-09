@@ -101,6 +101,28 @@ Initially, you will have the option to enable [webhooks](#webhooks). If desired,
 1. **Grant access** to allow Home Assistant to connect to your vehicle(s) via Smartcar.
 1. You should be redirected back to Home Assistant.
 
+#### Connecting from the Smartcar mobile app (this fork)
+
+Some makes and regions (for example BMW in the US) can block the browser step
+of Smartcar Connect. This fork adds a way to skip it when the vehicle was
+connected with Smartcar's official Android or iOS SDK instead, for example with
+the companion "Smartcar Link for HA" app.
+
+1. In the Smartcar dashboard, add the redirect URI `sc<application id>://exchange`
+   to your application.
+2. Connect the vehicle from the phone app using the same application ID and the
+   scopes you plan to enable here.
+3. In Home Assistant, tick **Car is connected with the Smartcar mobile app** on
+   the first step, choose the same scopes, and submit.
+   - v3 applications (client ID starts with `client_`): no code is needed. Home
+     Assistant gets an application token with your client credentials and finds
+     the connection the phone created.
+   - v2 applications: paste the authorization code the app shows, along with the
+     redirect URI it used.
+
+If no vehicle is found yet, the form stays open so you can finish connecting on
+the phone and submit again.
+
 #### Setup Complete
 
 If successful, the integration will be added, and Home Assistant will create devices and entities for your connected vehicle(s). From here:
