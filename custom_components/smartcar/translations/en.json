@@ -58,7 +58,7 @@
           "application_id": "Required for new Smartcar accounts and for v3.",
           "application_management_token": "Only provide if using webhooks. This is the _Application Management Token_ from your [Smartcar account]({smartcar_url}) to use webhooks.\n\nSee [the documentation]({docs_url}) for further details.",
           "use_webhooks": "Webhooks are Smartcar's preferred data update delivery method.",
-          "connected_via_app": "Turn this on if you connected your vehicle from a phone using an app built on Smartcar's official mobile SDK (for example the Smartcar Link Android app). Use this for brands, such as BMW and MINI outside the EU, that don't support Smartcar's browser sign-in. The browser step is then skipped."
+          "connected_via_app": "Turn this on if you connected your vehicle from a phone using an app built on Smartcar's official mobile SDK (for example the Smartcar Link Android app). Use this when Smartcar's browser sign-in doesn't work for your brand or region. The browser step is then skipped."
         },
         "description": "To configure Smartcar, provide an _Application ID_. An _Application Management Token_ is also required if enabling webhooks.",
         "title": "Smartcar configuration"
