@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import logging
+import time
 from typing import Any, cast
 
-from aiohttp import ClientConnectorError, ClientError
+from aiohttp import ClientConnectorError, ClientError, ClientResponseError
 from homeassistant.components import cloud, webhook
 from homeassistant.config_entries import (
     SOURCE_REAUTH,
@@ -15,6 +16,7 @@ from homeassistant.config_entries import (
 )
 from homeassistant.const import CONF_ACCESS_TOKEN, CONF_TOKEN, CONF_WEBHOOK_ID
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.config_entry_oauth2_flow import (
     AbstractOAuth2FlowHandler,
@@ -58,6 +60,14 @@ from .webhooks import webhook_url_from_id
 _LOGGER = logging.getLogger(__name__)
 
 CONF_USE_WEBHOOKS = "use_webhooks"
+
+# app link: the vehicle is connected to the Smartcar application from a phone
+# using Smartcar's official mobile SDK (e.g. the companion Android app) instead
+# of the browser-based Connect flow. this is the path Smartcar documents for
+# brands (such as BMW/MINI outside the EU) that don't support web consent.
+CONF_CONNECTED_VIA_APP = "connected_via_app"
+CONF_AUTHORIZATION_CODE = "authorization_code"
+CONF_APP_REDIRECT_URI = "app_redirect_uri"
 
 GENERAL_CONFIGURATION_SCHEMA = {
     vol.Optional(CONF_APPLICATION_ID): TextSelector(
@@ -110,6 +120,25 @@ def _add_dynamic_values_to_entry_data(
     )
 
 
+CONFIG_FLOW_GENERAL_CONFIGURATION_SCHEMA = {
+    **GENERAL_CONFIGURATION_SCHEMA,
+    vol.Required(CONF_CONNECTED_VIA_APP, default=False): bool,
+}
+
+
+def app_redirect_uri_for_application(application_id: str) -> str:
+    """Return the redirect URI Smartcar's mobile SDKs use for an application.
+
+    Smartcar's mobile SDK guides use a custom scheme of `sc` followed by the
+    application (formerly client) ID, e.g. `sc<application-id>://exchange`.
+    This must also be registered as a redirect URI in the Smartcar dashboard.
+
+    Returns:
+        The redirect URI.
+    """
+    return f"sc{application_id}://exchange"
+
+
 class SmartcarOAuth2FlowHandler(AbstractOAuth2FlowHandler, domain=DOMAIN):  # type: ignore[call-arg]
     """Config flow to handle Smartcar OAuth2 authentication."""
 
@@ -118,6 +147,7 @@ class SmartcarOAuth2FlowHandler(AbstractOAuth2FlowHandler, domain=DOMAIN):  # ty
     MINOR_VERSION = 0
     entry_data: dict[str, Any] | None = None
     scope_data: dict[str, Any] | None = None
+    connected_via_app: bool = False
 
     @staticmethod
     @callback
@@ -210,14 +240,22 @@ class SmartcarOAuth2FlowHandler(AbstractOAuth2FlowHandler, domain=DOMAIN):  # ty
             _validate_general_configuration_input(user_input, self.flow_impl, errors)
 
         if user_input is not None and not errors:
+            self.connected_via_app = bool(user_input.pop(CONF_CONNECTED_VIA_APP, False))
             self.entry_data = {**user_input}
             self.entry_data.pop(CONF_USE_WEBHOOKS, None)
+            if self.connected_via_app:
+                self.entry_data[CONF_CONNECTED_VIA_APP] = True
+            elif self.source == SOURCE_RECONFIGURE and (
+                self._get_reconfigure_entry().data.get(CONF_CONNECTED_VIA_APP)
+            ):
+                # explicitly clear a previously stored value
+                self.entry_data[CONF_CONNECTED_VIA_APP] = False
             return await self.async_step_scopes()
 
         return self.async_show_form(
             step_id="webhooks",
             data_schema=self.add_suggested_values_to_schema(
-                vol.Schema(GENERAL_CONFIGURATION_SCHEMA),
+                vol.Schema(CONFIG_FLOW_GENERAL_CONFIGURATION_SCHEMA),
                 _add_dynamic_values_to_entry_data(self._initial_data())
                 if user_input is None
                 else user_input,
@@ -273,7 +311,125 @@ class SmartcarOAuth2FlowHandler(AbstractOAuth2FlowHandler, domain=DOMAIN):  # ty
                 return await self.async_step_scopes()
         elif self.entry_data is None:
             return await self.async_step_webhooks()
+        if user_input is None and self.connected_via_app:
+            return await self.async_step_app_link()
         return await super().async_step_auth(user_input)
+
+    async def async_step_app_link(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Finish setup for a vehicle connected with Smartcar's mobile SDK.
+
+        For v3 applications, Smartcar issues application-level access tokens
+        using client credentials, and the browser flow is only used to create
+        the connection. When the connection was created from a phone with the
+        official mobile SDK, there is nothing left to exchange, so the
+        connections can be listed right away.
+
+        For v2 applications, the authorization code the mobile SDK received
+        is exchanged using the redirect URI the SDK used.
+
+        Returns:
+            The config flow result.
+        """
+        assert self.entry_data is not None
+
+        version = api_version_for_client_id(self.flow_impl.client_id)
+        application_id = (
+            self.entry_data.get(CONF_APPLICATION_ID) or self.flow_impl.client_id
+        )
+        default_redirect_uri = app_redirect_uri_for_application(
+            application_id if version == "v3" else self.flow_impl.client_id
+        )
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            code = (user_input.get(CONF_AUTHORIZATION_CODE) or "").strip()
+            redirect_uri = (
+                user_input.get(CONF_APP_REDIRECT_URI) or default_redirect_uri
+            ).strip()
+
+            if version == "v2" and not code:
+                errors[CONF_AUTHORIZATION_CODE] = "no_authorization_code"
+            else:
+                token = await self._async_resolve_app_token(code, redirect_uri, errors)
+                if token is not None:
+                    result = await self.async_oauth_create_entry(
+                        {"auth_implementation": self.flow_impl.domain, "token": token}
+                    )
+                    if not (
+                        result["type"] is FlowResultType.ABORT
+                        and result.get("reason") == "no_vehicles"
+                    ):
+                        return result
+                    # the phone may not have finished connecting the vehicle;
+                    # let the user try again rather than ending the flow.
+                    errors["base"] = "app_no_vehicles"
+
+        schema: dict[Any, Any] = {}
+        if version == "v2":
+            schema = {
+                vol.Required(CONF_AUTHORIZATION_CODE): TextSelector(
+                    config=TextSelectorConfig(type=TextSelectorType.TEXT)
+                ),
+                vol.Optional(
+                    CONF_APP_REDIRECT_URI, default=default_redirect_uri
+                ): TextSelector(config=TextSelectorConfig(type=TextSelectorType.URL)),
+            }
+
+        return self.async_show_form(
+            step_id="app_link_v2" if version == "v2" else "app_link",
+            data_schema=self.add_suggested_values_to_schema(
+                vol.Schema(schema), user_input or {}
+            ),
+            errors=errors,
+            description_placeholders={
+                "application_id": application_id,
+                "redirect_uri": default_redirect_uri,
+                "scopes": ", ".join(self.requested_scopes),
+            },
+        )
+
+    async def async_step_app_link_v2(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle the v2 variant of the app link step.
+
+        Returns:
+            The config flow result.
+        """
+        return await self.async_step_app_link(user_input)
+
+    async def _async_resolve_app_token(
+        self, code: str, redirect_uri: str, errors: dict[str, str]
+    ) -> dict[str, Any] | None:
+        """Obtain a token using the documented Smartcar token endpoint.
+
+        Returns:
+            The token, or None if it could not be obtained (errors populated).
+        """
+        try:
+            token = await self.flow_impl.async_resolve_external_data(
+                {"code": code, "state": {"redirect_uri": redirect_uri}}
+            )
+        except ClientResponseError:
+            _LOGGER.exception("Smartcar token request was rejected")
+            errors["base"] = "app_token_rejected"
+            return None
+        except (TimeoutError, ClientError, AssertionError, KeyError, ValueError):
+            _LOGGER.exception("Smartcar token request failed")
+            errors["base"] = "app_token_failed"
+            return None
+
+        if "expires_in" not in token:
+            _LOGGER.warning("Smartcar token response has no expires_in")
+            errors["base"] = "app_token_failed"
+            return None
+
+        token = {**token}
+        token["expires_in"] = int(token["expires_in"])
+        token["expires_at"] = time.time() + token["expires_in"]
+        return cast("dict[str, Any]", token)
 
     async def async_step_reconfigure(
         self,
@@ -299,6 +455,7 @@ class SmartcarOAuth2FlowHandler(AbstractOAuth2FlowHandler, domain=DOMAIN):  # ty
             The config flow result.
         """
         self.entry_data = {**self._initial_data()}
+        self.connected_via_app = bool(self.entry_data.get(CONF_CONNECTED_VIA_APP))
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(

@@ -33,7 +33,11 @@
       "no_application_id": "Missing application ID",
       "no_scopes": "At least one scope needs to be selected",
       "no_management_token": "Missing application management token",
-      "extraneous_management_token": "Do not provide application management token unless using webhooks"
+      "extraneous_management_token": "Do not provide application management token unless using webhooks",
+      "no_authorization_code": "Paste the authorization code shown by the app",
+      "app_no_vehicles": "Smartcar doesn't list a connected vehicle for this application yet. Finish connecting in the app, then try again.",
+      "app_token_rejected": "Smartcar rejected the token request. Check the client ID and secret, and for v2 apps use a fresh code.",
+      "app_token_failed": "Couldn't get a token from Smartcar. Check the logs and try again."
     },
     "step": {
       "pick_implementation": {
@@ -47,12 +51,14 @@
         "data": {
           "application_id": "Application ID",
           "application_management_token": "Application Management Token",
-          "use_webhooks": "Use webhooks"
+          "use_webhooks": "Use webhooks",
+          "connected_via_app": "Car is connected with the Smartcar mobile app"
         },
         "data_description": {
           "application_id": "Required for new Smartcar accounts and for v3.",
           "application_management_token": "Only provide if using webhooks. This is the _Application Management Token_ from your [Smartcar account]({smartcar_url}) to use webhooks.\n\nSee [the documentation]({docs_url}) for further details.",
-          "use_webhooks": "Webhooks are Smartcar's preferred data update delivery method."
+          "use_webhooks": "Webhooks are Smartcar's preferred data update delivery method.",
+          "connected_via_app": "Turn this on if you connected your vehicle from a phone using an app built on Smartcar's official mobile SDK (for example the Smartcar Link Android app). Use this when Smartcar's browser sign-in doesn't work for your brand or region. The browser step is then skipped."
         },
         "description": "To configure Smartcar, provide an _Application ID_. An _Application Management Token_ is also required if enabling webhooks.",
         "title": "Smartcar configuration"
@@ -72,6 +78,21 @@
         },
         "description": "Select the permissions you would like to grant",
         "title": "Permission selection"
+      },
+      "app_link": {
+        "title": "Finish with the Smartcar mobile app",
+        "description": "Before continuing, connect your vehicle from your phone with the Smartcar Link app (or another app using Smartcar's official mobile SDK):\n\n1. Use application ID `{application_id}`.\n2. Make sure `{redirect_uri}` is listed under Redirect URIs for this application in the Smartcar dashboard.\n3. Grant at least these permissions in the app: {scopes}.\n\nWhen the app says your vehicle is connected, select Submit. Home Assistant will look up the vehicles connected to your Smartcar application."
+      },
+      "app_link_v2": {
+        "title": "Finish with the Smartcar mobile app",
+        "description": "Your Smartcar application uses the older (v2) API, so the authorization code from the app is needed. Connect your vehicle from your phone with the Smartcar Link app using client ID `{application_id}`, grant at least these permissions: {scopes}, then copy the code it shows and paste it below right away (codes expire after a few minutes).",
+        "data": {
+          "authorization_code": "Authorization code",
+          "app_redirect_uri": "Redirect URI used by the app"
+        },
+        "data_description": {
+          "app_redirect_uri": "Must match the redirect URI the app used and the one registered in the Smartcar dashboard. Default: `{redirect_uri}`."
+        }
       }
     }
   },
