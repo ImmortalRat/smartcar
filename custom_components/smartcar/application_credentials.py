@@ -1,4 +1,6 @@
 from dataclasses import dataclass
+from http import HTTPStatus
+import logging
 from typing import cast
 
 from homeassistant.components.application_credentials import (
@@ -16,6 +18,12 @@ from homeassistant.helpers.config_entry_oauth2_flow import (
 
 from .const import OAUTH2_AUTHORIZE, OAUTH2_TOKEN, OAUTH2_TOKEN_LEGACY
 from .util import api_version_for_client_id
+
+_LOGGER = logging.getLogger(__name__)
+
+
+class InvalidTokenResponseError(ValueError):
+    """Error to indicate the token response had no bearer access token."""
 
 
 @dataclass
@@ -50,19 +58,40 @@ class SmartcarAuthImplementation(AuthImplementation):
         if api_version_for_client_id(self.client_id) == "v2":
             return cast("dict", await super()._token_request(data))
 
+        # Smartcar documents this endpoint as taking a form-encoded body:
+        # https://smartcar.com/docs/api-reference/authorization/request-access-token
         session = async_get_clientsession(self.hass)
         response = await session.post(
             self.token_url,
-            json={
+            data={
                 "client_id": self.client_id,
                 "client_secret": self.client_secret,
                 "grant_type": "client_credentials",
             },
         )
-        data = await response.json()
 
-        assert data.get("token_type", "").lower() == "bearer", "Invalid token type."
-        assert data.get("access_token"), "Invalid access token."
+        try:
+            data = await response.json(content_type=None)
+        except ValueError:
+            data = None
+        if not isinstance(data, dict):
+            data = {}
+
+        if response.status >= HTTPStatus.BAD_REQUEST or not (
+            str(data.get("token_type", "")).lower() == "bearer"
+            and data.get("access_token")
+        ):
+            # never log the token or the secret; only Smartcar's error fields
+            _LOGGER.error(
+                "Smartcar token request failed: HTTP %s, error=%s, description=%s",
+                response.status,
+                data.get("error") or data.get("code"),
+                data.get("error_description")
+                or data.get("description")
+                or data.get("message"),
+            )
+            response.raise_for_status()
+            raise InvalidTokenResponseError
 
         return {"refresh_token": None, **data}
 
