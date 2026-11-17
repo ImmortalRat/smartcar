@@ -154,14 +154,39 @@ async def test_app_link_v3_token_rejected(
     hass: HomeAssistant,
     aioclient_mock: AiohttpClientMocker,
     mock_smartcar_auth: AsyncMock,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A bad client secret shows an error on the form."""
+    """A bad client secret shows an error on the form and logs Smartcar's reason."""
     result = await _start_app_link_flow(hass)
-    aioclient_mock.post(OAUTH2_TOKEN, status=401, json={"error": "invalid_client"})
+    aioclient_mock.post(
+        OAUTH2_TOKEN,
+        status=401,
+        json={"error": "invalid_client", "error_description": "Bad credentials"},
+    )
+
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "app_token_rejected"}
+    assert "HTTP 401, error=invalid_client, description=Bad credentials" in caplog.text
+    assert "mock-secret" not in caplog.text
+
+
+@pytest.mark.parametrize("client_id_version", ["v3"])
+@pytest.mark.usefixtures("current_request_with_host")
+async def test_app_link_v3_token_response_without_bearer(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    mock_smartcar_auth: AsyncMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A success status without a bearer token is reported, not asserted."""
+    result = await _start_app_link_flow(hass)
+    aioclient_mock.post(OAUTH2_TOKEN, json={"unexpected": True})
 
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "app_token_failed"}
+    assert "Smartcar token request failed: HTTP 200" in caplog.text
 
 
 @pytest.mark.parametrize("client_id_version", ["v2"])
